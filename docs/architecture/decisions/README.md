@@ -19,4 +19,4 @@ NNNN-short-decision-name.md
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-generator-port.md) | Generator port for synthetic markup.Request traffic | 🟡 Proposed |
+| [0001](0001-generator-port.md) | Generator port for synthetic markup.Request traffic | ✅ Accepted |

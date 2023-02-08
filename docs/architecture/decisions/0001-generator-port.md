@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes a `Generator` port at the heart of traffic-gen with a single `Next() Request` method. The first adapter, `randommix.Generator`, ships in the same release window and produces requests with operator-configurable weighted distributions per field. A second port — `Poster` — owns the HTTP push so the QPS knob and the generation knob are tunable independently.
+Accepted — `internal/traffic` ships the three-artifact domain (`Request`, `Generator`, `Poster`); `internal/traffic/randommix` ships the first Generator adapter with operator-configurable per-field weighted distributions, seeded `*rand.Rand` for determinism, and O(log N) picking; `internal/traffic/poster` ships the first Poster adapter with `1s/QPS`-paced single-goroutine push, classification across five mutually-exclusive outcome buckets (Successes / NotMatches / ClientErrors / ServerErrors / TransportErrors), and graceful ctx-cancel termination; `cmd/traffic-gen` wires `--target`, `--qps`, `--duration`, `--seed`, `--timeout` flags and ships a v0.0.1 `defaultBiases()` persona mix targeting markup-svc's testdata. An end-to-end smoke against a running markup-svc confirmed the wire-shape contract: at QPS=200 for 2s the poster achieved 199.9 measured QPS with 186 successes + 214 markup-svc-no-match responses and zero transport errors.
 
 ## Context
 
