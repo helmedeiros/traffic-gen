@@ -20,16 +20,15 @@ import (
 // the server saw at least a handful of POSTs.
 func TestRunPostsAgainstTargetWithDuration(t *testing.T) {
 	var hits int64
-	var sawContentType atomic.Bool
-	var sawValidRequest atomic.Bool
+	var sawContentType, sawValidRequest int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
 		if r.Header.Get("Content-Type") == "application/json" {
-			sawContentType.Store(true)
+			atomic.StoreInt32(&sawContentType, 1)
 		}
 		var body traffic.Request
 		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			sawValidRequest.Store(true)
+			atomic.StoreInt32(&sawValidRequest, 1)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -48,10 +47,10 @@ func TestRunPostsAgainstTargetWithDuration(t *testing.T) {
 	if got := atomic.LoadInt64(&hits); got < 3 {
 		t.Errorf("server saw %d POSTs; want >= 3 (logs: stderr=%q)", got, stderr.String())
 	}
-	if !sawContentType.Load() {
+	if atomic.LoadInt32(&sawContentType) == 0 {
 		t.Error("server never saw Content-Type: application/json on a POST")
 	}
-	if !sawValidRequest.Load() {
+	if atomic.LoadInt32(&sawValidRequest) == 0 {
 		t.Error("server never decoded a POST body as a traffic.Request")
 	}
 	if !strings.Contains(stdout.String(), "target=") {
