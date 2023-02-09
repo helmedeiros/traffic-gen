@@ -20,6 +20,10 @@ Hexagonal. `internal/traffic.Generator` is the one-method port through which the
 
 See [`docs/architecture/decisions/`](docs/architecture/decisions/). ADR-0001 covers the port shape and the local-mirror-vs-import decision for the wire request type.
 
+## Cookbook
+
+See [`docs/cookbook/`](docs/cookbook/) for operator-level recipes. The day-one recipe walks through running markup-svc and traffic-gen on the same host and watching JSON logs flow through.
+
 ## Standing rules
 
 This repo follows the same conventions as markup-svc:
