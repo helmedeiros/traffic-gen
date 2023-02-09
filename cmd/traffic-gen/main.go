@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/helmedeiros/traffic-gen/internal/jsonlog"
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix"
@@ -62,13 +63,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("build poster: %w", err)
 	}
 
-	// stdout carries the boot-time configuration line so operators
-	// piping stdout to a structured-log aggregator capture what was
-	// requested; stderr carries the poster's per-run summary so it
-	// stays out of the structured-log stream when stdout is captured.
-	fmt.Fprintf(stdout, "traffic-gen: target=%s qps=%d duration=%s seed=%d\n",
-		*target, *qps, *duration, *seed)
-	return p.Run(ctx, gen)
+	// stdout carries the structured boot line so operators piping
+	// stdout to a JSON log aggregator (Loki, Elasticsearch, etc.)
+	// see the requested configuration as one parsed event; stderr
+	// carries the poster's per-run human-readable summary so it
+	// stays out of the structured-log stream.
+	log := jsonlog.New(stdout)
+	log.Info("traffic-gen.boot", map[string]interface{}{
+		"target":   *target,
+		"qps":      *qps,
+		"duration": (*duration).String(),
+		"seed":     *seed,
+		"timeout":  (*timeout).String(),
+	})
+	err = p.Run(ctx, gen)
+	if err != nil {
+		log.Error("traffic-gen.run", map[string]interface{}{"error": err.Error()})
+	} else {
+		log.Info("traffic-gen.done", nil)
+	}
+	return err
 }
 
 // defaultBiases is the v0.0.1 shipped persona mix. The proportions

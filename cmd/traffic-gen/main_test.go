@@ -53,8 +53,24 @@ func TestRunPostsAgainstTargetWithDuration(t *testing.T) {
 	if atomic.LoadInt32(&sawValidRequest) == 0 {
 		t.Error("server never decoded a POST body as a traffic.Request")
 	}
-	if !strings.Contains(stdout.String(), "target=") {
-		t.Errorf("stdout missing boot line: %q", stdout.String())
+	// Boot + done land on stdout as JSON; assert both are present
+	// and parseable rather than grepping for a substring.
+	stdoutLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(stdoutLines) < 2 {
+		t.Fatalf("stdout has %d lines, want >= 2 (boot + done): %q", len(stdoutLines), stdout.String())
+	}
+	var boot struct {
+		Msg   string                 `json:"msg"`
+		Attrs map[string]interface{} `json:"attrs"`
+	}
+	if err := json.NewDecoder(strings.NewReader(stdoutLines[0])).Decode(&boot); err != nil {
+		t.Fatalf("boot line is not JSON: %v (line=%q)", err, stdoutLines[0])
+	}
+	if boot.Msg != "traffic-gen.boot" {
+		t.Errorf("boot msg = %q, want traffic-gen.boot", boot.Msg)
+	}
+	if _, ok := boot.Attrs["target"]; !ok {
+		t.Errorf("boot attrs missing target: %+v", boot.Attrs)
 	}
 	if !strings.Contains(stderr.String(), "poster: done") {
 		t.Errorf("stderr missing poster summary: %q", stderr.String())
