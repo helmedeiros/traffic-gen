@@ -20,3 +20,4 @@ NNNN-short-decision-name.md
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-generator-port.md) | Generator port for synthetic markup.Request traffic | ✅ Accepted |
+| [0002](0002-named-presets.md) | Named persona-mix presets selected by --preset | 🟡 Proposed |
