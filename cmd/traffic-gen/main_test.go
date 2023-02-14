@@ -93,6 +93,52 @@ func TestRunReturnsErrorOnNegativeQPS(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnknownPreset(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"--target", "http://example/decide",
+		"--preset", "made-up",
+		"--duration", "10ms",
+	}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run accepted unknown preset; want error")
+	}
+	if !strings.Contains(err.Error(), "made-up") {
+		t.Errorf("err %q does not name the offending preset", err)
+	}
+}
+
+func TestRunPresetFlagWorks(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, name := range []string{"default", "uniform", "stress-no-match"} {
+		var stdout, stderr bytes.Buffer
+		args := []string{
+			"--target", srv.URL,
+			"--qps", "100",
+			"--duration", "30ms",
+			"--seed", "1",
+			"--preset", name,
+		}
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Errorf("preset %q: run: %v", name, err)
+		}
+		// Boot line should mention the chosen preset.
+		var boot struct {
+			Attrs map[string]interface{} `json:"attrs"`
+		}
+		_ = json.NewDecoder(strings.NewReader(strings.Split(stdout.String(), "\n")[0])).Decode(&boot)
+		if got, _ := boot.Attrs["preset"].(string); got != name {
+			t.Errorf("preset %q: boot attrs.preset = %q, want %q", name, got, name)
+		}
+	}
+}
+
 // TestRunStopsOnContextCancel covers the SIGINT/SIGTERM path the
 // real main() uses: a ctx cancel during a long run returns nil
 // without crashing.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — proposes an `internal/traffic/randommix/presets` package shipping three named `[]Bias` configurations operators select via a `--preset` cmd flag. Custom biases stay reachable through the wrapper-main pattern; a config-file route stays deferred until a real operator asks. The default preset preserves the v0.0.1 `defaultBiases()` shape so an operator running `traffic-gen` with no `--preset` flag sees the same wire mix as before.
+Accepted — `internal/traffic/randommix/presets` ships three named `[]Bias` configurations (`default`, `uniform`, `stress-no-match`) exposed via `presets.All()` + `presets.Lookup(name)`. The `default` preset matches the v0.0.1 `defaultBiases()` shape byte-exact (verified by a `reflect.DeepEqual` regression test). `cmd/traffic-gen` gains `--preset=NAME` (default `default`); the v0.0.1 inline `defaultBiases()` helper is removed so the source of truth for the wire mix lives in one place. An unknown `--preset` name fails boot with an error message naming the menu, mirroring the markup-svc `--policy` / `--adapter` posture. The boot JSON event records the chosen preset on `attrs.preset` so structured logs trace which mix produced any subsequent traffic.
 
 ## Context
 

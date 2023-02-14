@@ -20,6 +20,7 @@ import (
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix"
+	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix/presets"
 )
 
 func main() {
@@ -42,11 +43,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	duration := fs.Duration("duration", 0, "stop after this duration (zero = run until SIGINT/SIGTERM)")
 	seed := fs.Int64("seed", time.Now().UnixNano(), "random seed for the Generator (set to a fixed value for deterministic mixes across runs)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request HTTP timeout")
+	preset := fs.String("preset", "default", "named persona-mix preset (one of: default, uniform, stress-no-match); see traffic-gen/ADR-0002")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	gen, err := randommix.New(defaultBiases(), *seed)
+	chosen, err := presets.Lookup(*preset)
+	if err != nil {
+		return err
+	}
+	gen, err := randommix.New(chosen.Biases, *seed)
 	if err != nil {
 		return fmt.Errorf("build generator: %w", err)
 	}
@@ -75,6 +81,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		"duration": (*duration).String(),
 		"seed":     *seed,
 		"timeout":  (*timeout).String(),
+		"preset":   chosen.Name,
 	})
 	err = p.Run(ctx, gen)
 	if err != nil {
@@ -83,57 +90,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		log.Info("traffic-gen.done", nil)
 	}
 	return err
-}
-
-// defaultBiases is the v0.0.1 shipped persona mix. The proportions
-// roughly mirror markup-svc's testdata/rules.csv -- some Requests
-// match the enterprise rule, some the br_peak AND-condition, some
-// the default_consumer rule, and a meaningful slice match nothing
-// (404 from markup-svc). The 404 slice is intentional: it exercises
-// the no-match path, which is part of the production wire shape.
-//
-// Operators wanting a different mix edit this function and rebuild,
-// or supply a custom Generator via a wrapper main. A config-file
-// route is a follow-up if a real operator asks for it.
-func defaultBiases() []randommix.Bias {
-	return []randommix.Bias{
-		{
-			Field: "customer_tier",
-			Values: []randommix.WeightedValue{
-				{Value: "enterprise", Weight: 20},
-				{Value: "gold", Weight: 30},
-				{Value: "silver", Weight: 30},
-				{Value: "consumer", Weight: 20},
-			},
-		},
-		{
-			Field: "country",
-			Values: []randommix.WeightedValue{
-				{Value: "BR", Weight: 30},
-				{Value: "DE", Weight: 25},
-				{Value: "FR", Weight: 20},
-				{Value: "NL", Weight: 10},
-				{Value: "ES", Weight: 10},
-				{Value: "IT", Weight: 5},
-			},
-		},
-		{
-			Field: "time_window",
-			Values: []randommix.WeightedValue{
-				{Value: "peak", Weight: 30},
-				{Value: "off", Weight: 40},
-				{Value: "normal", Weight: 30},
-			},
-		},
-		{
-			Field: "channel",
-			Values: []randommix.WeightedValue{
-				{Value: "web", Weight: 60},
-				{Value: "app", Weight: 30},
-				{Value: "partner", Weight: 10},
-			},
-		},
-	}
 }
 
 // Compile-time assertion the wired generator satisfies the port.
