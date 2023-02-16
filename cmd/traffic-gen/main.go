@@ -21,6 +21,7 @@ import (
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix/presets"
+	"github.com/helmedeiros/traffic-gen/internal/traffic/rate"
 )
 
 func main() {
@@ -39,12 +40,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("traffic-gen", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", "http://localhost:8080/decide", "target URL to POST generated Request bodies at")
-	qps := fs.Int("qps", 100, "target requests per second (paced via a 1s/QPS ticker; AchievedQPS in the summary is the honest measured rate)")
-	duration := fs.Duration("duration", 0, "stop after this duration (zero = run until SIGINT/SIGTERM)")
+	qps := fs.Int("qps", 0, "target requests per second; alias for --profile=steady:N (mutually exclusive with --profile). Zero means no value set; the cmd defaults to --profile=steady:100 when neither flag is passed.")
+	profileSpec := fs.String("profile", "", "rate profile spec, one of: steady:N, linear:A->B@T, exp:A->B@T (mutually exclusive with --qps); see traffic-gen/ADR-0003")
+	duration := fs.Duration("duration", 0, "stop after this duration (zero = run until SIGINT/SIGTERM or the profile's own Duration elapses, whichever fires first)")
 	seed := fs.Int64("seed", time.Now().UnixNano(), "random seed for the Generator (set to a fixed value for deterministic mixes across runs)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request HTTP timeout")
 	preset := fs.String("preset", "default", "named persona-mix preset (one of: default, uniform, stress-no-match); see traffic-gen/ADR-0002")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *qps != 0 && *profileSpec != "" {
+		return fmt.Errorf("--qps and --profile are mutually exclusive")
+	}
+	if *qps < 0 {
+		return fmt.Errorf("--qps must be positive, got %d", *qps)
+	}
+	profile, err := pickProfile(*qps, *profileSpec)
+	if err != nil {
 		return err
 	}
 
@@ -60,7 +73,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	httpClient := &http.Client{Timeout: *timeout}
 	p, err := poster.New(poster.Config{
 		TargetURL: *target,
-		QPS:       *qps,
+		Profile:   profile,
 		Duration:  *duration,
 		Client:    httpClient,
 		Out:       stderr,
@@ -77,7 +90,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	log := jsonlog.New(stdout)
 	log.Info("traffic-gen.boot", map[string]interface{}{
 		"target":   *target,
-		"qps":      *qps,
+		"profile":  describeProfile(profile),
 		"duration": (*duration).String(),
 		"seed":     *seed,
 		"timeout":  (*timeout).String(),
@@ -90,6 +103,57 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		log.Info("traffic-gen.done", nil)
 	}
 	return err
+}
+
+// pickProfile resolves the operator's --qps / --profile choice into
+// a rate.RateProfile. Precedence:
+//
+//   - --profile=spec set: parse the DSL, return the resulting profile.
+//   - --qps=N set (>0): build SteadyProfile{TargetQPS: N}.
+//   - neither set: default to SteadyProfile{TargetQPS: 100} so the
+//     binary's no-flag invocation still does something useful.
+//
+// Mutual exclusion of --qps and --profile is enforced by the caller;
+// pickProfile assumes at most one is set.
+func pickProfile(qps int, spec string) (rate.RateProfile, error) {
+	if spec != "" {
+		return rate.Parse(spec)
+	}
+	if qps > 0 {
+		return rate.SteadyProfile{TargetQPS: qps}, nil
+	}
+	return rate.SteadyProfile{TargetQPS: 100}, nil
+}
+
+// describeProfile returns a map suitable for the boot JSON event's
+// attrs.profile field. The shape names the kind plus the relevant
+// numeric fields so structured-log queries can slice on
+// attrs.profile.kind and attrs.profile.start_qps without needing to
+// re-parse the spec string.
+func describeProfile(p rate.RateProfile) map[string]interface{} {
+	switch v := p.(type) {
+	case rate.SteadyProfile:
+		return map[string]interface{}{
+			"kind": "steady",
+			"qps":  v.TargetQPS,
+		}
+	case rate.LinearProfile:
+		return map[string]interface{}{
+			"kind":      "linear",
+			"start_qps": v.StartQPS,
+			"end_qps":   v.EndQPS,
+			"duration":  v.Total.String(),
+		}
+	case rate.ExponentialProfile:
+		return map[string]interface{}{
+			"kind":      "exp",
+			"start_qps": v.StartQPS,
+			"end_qps":   v.EndQPS,
+			"duration":  v.Total.String(),
+		}
+	default:
+		return map[string]interface{}{"kind": fmt.Sprintf("%T", p)}
+	}
 }
 
 // Compile-time assertion the wired generator satisfies the port.

@@ -93,6 +93,78 @@ func TestRunReturnsErrorOnNegativeQPS(t *testing.T) {
 	}
 }
 
+func TestRunProfileRampDrivesPoster(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	var stdout, stderr bytes.Buffer
+	args := []string{
+		"--target", srv.URL,
+		"--profile", "linear:50->500@200ms",
+		"--duration", "200ms",
+		"--seed", "1",
+	}
+	if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Boot line should carry the parsed profile description.
+	var boot struct {
+		Attrs map[string]interface{} `json:"attrs"`
+	}
+	_ = json.NewDecoder(strings.NewReader(strings.Split(stdout.String(), "\n")[0])).Decode(&boot)
+	prof, _ := boot.Attrs["profile"].(map[string]interface{})
+	if kind, _ := prof["kind"].(string); kind != "linear" {
+		t.Errorf("boot attrs.profile.kind = %v, want linear", prof["kind"])
+	}
+}
+
+func TestRunQpsAndProfileMutuallyExclusive(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	args := []string{
+		"--target", "http://example/decide",
+		"--qps", "100",
+		"--profile", "steady:200",
+	}
+	err := run(context.Background(), args, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("err = %v, want mutual-exclusion error", err)
+	}
+}
+
+func TestRunCmdDurationTruncatesProfile(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Profile says ramp 50->500 over 5 minutes; --duration says exit
+	// at 80ms. The run should end at 80ms with the ramp truncated --
+	// far fewer requests than a full 5-minute ramp would produce, and
+	// the elapsed time of run() should be in the 80-200ms range.
+	var stdout, stderr bytes.Buffer
+	args := []string{
+		"--target", srv.URL,
+		"--profile", "linear:50->500@5m",
+		"--duration", "80ms",
+		"--seed", "1",
+	}
+	start := time.Now()
+	if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("run took %s after --duration=80ms; want < 500ms", elapsed)
+	}
+	if atomic.LoadInt64(&hits) > 200 {
+		t.Errorf("hits=%d in 80ms at start=50QPS; way more than expected", atomic.LoadInt64(&hits))
+	}
+}
+
 func TestRunRejectsUnknownPreset(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{

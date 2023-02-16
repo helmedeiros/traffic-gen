@@ -11,15 +11,28 @@ import (
 	"time"
 
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
+	"github.com/helmedeiros/traffic-gen/internal/traffic/rate"
 )
 
-// Config carries the operator-set knobs. QPS and TargetURL are
+// pauseCheckInterval is the sleep window between QPS checks when the
+// active RateProfile reports QPS == 0 (a transient pause). 100ms
+// trades responsiveness against tight-loop CPU when the operator
+// adjusts the rate via a future control endpoint.
+const pauseCheckInterval = 100 * time.Millisecond
+
+// Config carries the operator-set knobs. TargetURL and Profile are
 // required; Duration is optional (zero means "run until ctx is
-// canceled"); Client defaults to http.DefaultClient when nil; Out is
-// the optional progress sink and defaults to io.Discard when nil.
+// canceled OR the Profile's own Duration elapses, whichever comes
+// first"); Client defaults to http.DefaultClient when nil; Out is the
+// optional progress sink and defaults to io.Discard when nil.
+//
+// The cmd-level --duration flag and the Profile's own Duration
+// compose: the run ends on whichever fires first. Operators wanting
+// "ramp then hold until SIGINT" leave Duration zero and rely on the
+// profile's clamp-to-EndQPS behavior beyond Profile.Duration.
 type Config struct {
 	TargetURL string
-	QPS       int
+	Profile   rate.RateProfile
 	Duration  time.Duration
 	Client    *http.Client
 	Out       io.Writer
@@ -57,7 +70,7 @@ type Poster struct {
 // New validates cfg and returns a Poster ready to Run. Errors:
 //
 //   - "target URL is required" if cfg.TargetURL is empty.
-//   - "QPS must be positive, got N" if cfg.QPS <= 0.
+//   - "rate profile is required" if cfg.Profile is nil.
 //
 // Other zero-value fields are filled in with defaults (Client,
 // Duration, Out).
@@ -65,8 +78,8 @@ func New(cfg Config) (*Poster, error) {
 	if cfg.TargetURL == "" {
 		return nil, errors.New("target URL is required")
 	}
-	if cfg.QPS <= 0 {
-		return nil, fmt.Errorf("QPS must be positive, got %d", cfg.QPS)
+	if cfg.Profile == nil {
+		return nil, errors.New("rate profile is required")
 	}
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
@@ -77,26 +90,29 @@ func New(cfg Config) (*Poster, error) {
 	return &Poster{cfg: cfg}, nil
 }
 
-// Run implements traffic.Poster. Generates requests at the target
-// QPS and POSTs them as JSON to cfg.TargetURL. Returns when:
+// Run implements traffic.Poster. Generates requests at the QPS the
+// configured RateProfile reports for the current elapsed time and
+// POSTs them as JSON to cfg.TargetURL. Returns when:
 //
 //   - ctx is canceled (any in-flight POST is canceled via the request
 //     context -- the generator stops pushing the target immediately
 //     rather than draining the current request).
 //   - cfg.Duration elapses (when Duration > 0).
 //
-// The pacing is a ticker fired at 1s/QPS intervals. The implementation
-// is intentionally not jitter-corrected: a slow target backs up the
-// generation as the ticker queue does not buffer, so AchievedQPS in
-// the Summary is the honest measured rate rather than the requested.
+// The pacing is a sleep-until loop that recomputes the inter-send
+// interval on every send. Per send: read elapsed, ask the profile
+// for QPS(elapsed), compute interval := time.Second / QPS, sleep
+// until the next send time. When the profile reports QPS == 0 the
+// loop sleeps a fixed pauseCheckInterval and re-checks; the run is
+// paused but not stopped.
+//
+// The implementation is intentionally not jitter-corrected: a slow
+// target backs up the next-send computation so AchievedQPS in the
+// Summary is the honest measured rate rather than the requested.
 func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 	if gen == nil {
 		return errors.New("generator is required")
 	}
-
-	interval := time.Second / time.Duration(p.cfg.QPS)
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
 
 	var deadlineCh <-chan time.Time
 	if p.cfg.Duration > 0 {
@@ -107,6 +123,7 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 
 	var summary Summary
 	start := time.Now()
+	nextSend := start
 
 	post := func() {
 		summary.Attempts++
@@ -143,9 +160,49 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 		case <-deadlineCh:
 			writeSummary(p.cfg.Out, &summary, start)
 			return nil
-		case <-tick.C:
-			post()
+		default:
 		}
+
+		currentQPS := p.cfg.Profile.QPS(time.Since(start))
+		if currentQPS <= 0 {
+			// Profile is paused. Sleep a short window and re-check.
+			// A select on the timer + ctx so cancel terminates fast.
+			pause := time.NewTimer(pauseCheckInterval)
+			select {
+			case <-ctx.Done():
+				pause.Stop()
+				writeSummary(p.cfg.Out, &summary, start)
+				return nil
+			case <-deadlineCh:
+				pause.Stop()
+				writeSummary(p.cfg.Out, &summary, start)
+				return nil
+			case <-pause.C:
+			}
+			// Reset nextSend so the post-pause cadence picks up cleanly
+			// rather than firing a burst to catch up.
+			nextSend = time.Now()
+			continue
+		}
+
+		interval := time.Second / time.Duration(currentQPS)
+		nextSend = nextSend.Add(interval)
+		sleep := time.Until(nextSend)
+		if sleep > 0 {
+			timer := time.NewTimer(sleep)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				writeSummary(p.cfg.Out, &summary, start)
+				return nil
+			case <-deadlineCh:
+				timer.Stop()
+				writeSummary(p.cfg.Out, &summary, start)
+				return nil
+			case <-timer.C:
+			}
+		}
+		post()
 	}
 }
 
