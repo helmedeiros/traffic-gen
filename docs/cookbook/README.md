@@ -7,6 +7,7 @@ Operator-level recipes for driving load against markup-svc and the broader Prici
 | Recipe | When to use |
 |---|---|
 | [run-locally.md](run-locally.md) | Run markup-svc and traffic-gen on the same host and watch the JSON logs flow through |
+| [long-run.md](long-run.md) | Run both services in containers with a ramping rate profile, suitable for overnight runs and `jq`-piped logs |
 
 ## How these recipes are written
 
