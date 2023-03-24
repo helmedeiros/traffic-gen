@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/helmedeiros/traffic-gen/internal/jsonlog"
+	tgotel "github.com/helmedeiros/traffic-gen/internal/observability/otel"
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix"
@@ -46,6 +47,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	seed := fs.Int64("seed", time.Now().UnixNano(), "random seed for the Generator (set to a fixed value for deterministic mixes across runs)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request HTTP timeout")
 	preset := fs.String("preset", "default", "named persona-mix preset (one of: default, uniform, stress-no-match); see traffic-gen/ADR-0002")
+	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit one root traffic.request span per outbound POST + inject W3C traceparent so downstream services (gateway, markup-svc) join the same trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions. See ADR-0004.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -70,7 +72,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("build generator: %w", err)
 	}
 
-	httpClient := &http.Client{Timeout: *timeout}
+	var transport http.RoundTripper = http.DefaultTransport
+	if *otelEnabled {
+		tracer, shutdown, err := tgotel.Bootstrap(ctx, "github.com/helmedeiros/traffic-gen/cmd/traffic-gen")
+		if err != nil {
+			return fmt.Errorf("otel bootstrap: %w", err)
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdown(shutdownCtx)
+		}()
+		transport = &tgotel.InstrumentedTransport{Tracer: tracer, Inner: transport}
+	}
+	httpClient := &http.Client{Timeout: *timeout, Transport: transport}
 	p, err := poster.New(poster.Config{
 		TargetURL: *target,
 		Profile:   profile,

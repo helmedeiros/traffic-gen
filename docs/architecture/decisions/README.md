@@ -22,3 +22,4 @@ NNNN-short-decision-name.md
 | [0001](0001-generator-port.md) | Generator port for synthetic markup.Request traffic | ✅ Accepted |
 | [0002](0002-named-presets.md) | Named persona-mix presets selected by --preset | ✅ Accepted |
 | [0003](0003-rate-profiles.md) | Rate profiles for variable-QPS long runs | ✅ Accepted |
+| [0004](0004-otel-root-spans.md) | OTel root spans + W3C trace context emission per outbound POST | ✅ Accepted |

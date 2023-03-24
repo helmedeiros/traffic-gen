@@ -7,6 +7,26 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.3] - 2023-03-24
+
+Tracing release. `--otel-enabled` bootstraps the OTel SDK + wraps the poster's outbound HTTP client `Transport` with an `InstrumentedTransport` that opens one root `traffic.request` span per outbound POST and injects W3C `traceparent` into the request headers. traffic-gen becomes the trace root of the platform pipeline: the gateway (decision-gateway v0.0.2+) extracts the propagated traceparent and continues the chain; markup-svc (v0.1.6+) extracts it from the gateway's proxied request; the whole `traffic-gen → decision-gateway → markup-svc` waterfall renders as a single trace in Jaeger UI with each component's per-request cost visible. Closes ADR-0004.
+
+### Added
+
+- `internal/observability/otel/`: new package.
+  - `bootstrap.go`: `Bootstrap(ctx, instrumentationName) (trace.Tracer, Shutdown, error)`. OTLP gRPC exporter + batched `sdktrace.TracerProvider` + detected resource + global W3C TraceContext + Baggage propagator. Same shape as the decision-gateway and markup-svc Bootstrap functions; lifted rather than dep'd (each binary owns its boot path).
+  - `transport.go`: `InstrumentedTransport{Tracer, Inner}` implementing `http.RoundTripper`. Opens a root `traffic.request` span (CLIENT kind) per RoundTrip, injects `traceparent`, sets `http.method` / `http.url` / `upstream.host` / `http.status_code` attributes, marks 5xx + transport-error responses as Error span status. No parent context is consumed — traffic-gen is the trace ORIGIN, not a hop.
+- `--otel-enabled` flag on `cmd/traffic-gen`: bootstraps the SDK, wraps `http.DefaultTransport`, passes the wrapped client into `poster.Config.Client`. Without the flag, no OTel code is in the request path (zero overhead).
+- ADR-0004 (Accepted): OTel root spans + W3C trace context emission per outbound POST. Two design questions answered: span emission at the poster layer vs the HTTP transport layer (pick transport; keeps the poster OTel-free, matches the hexagonal posture, matches the decision-gateway pattern); root-per-request vs one-root-per-Run with per-request children (pick one-root-per-request; Jaeger's trace = one transaction model wins, the grouping-by-ramp question is answered by service-name + time-window filters).
+
+### Performance impact
+
+`--otel-enabled` off: zero ns delta vs v0.0.2 (the default `http.Transport` is used, no OTel code reaches the request path). `--otel-enabled` on, collector reachable: ~100 ns per request (one span open + close + propagator Inject). The batched span processor's submit is async; the send loop does not block on the gRPC export. At the platform's default profile (500 QPS for 5 minutes = ~150k spans), the OTel Collector handles the volume transparently.
+
+### Dependencies
+
+- `go.opentelemetry.io/otel` v1.11.2 + `sdk` v1.11.2 + `trace` v1.11.2 + `exporters/otlp/otlptrace` v1.11.2 + `otlptracegrpc` v1.11.2. Transitive: `google.golang.org/grpc` v1.51.0, `google.golang.org/protobuf` v1.28.1. Matches the markup-svc + decision-gateway + pricing-observability OTel version line.
+
 ## [0.0.2] - 2023-02-17
 
 Variable-rate long runs land. The v0.0.1 fixed-QPS Poster becomes a sleep-until loop driven by a `RateProfile` port so traffic-gen can drive markup-svc with linear and exponential ramps over arbitrary durations. The container image publishes alongside markup-svc on every tag push so the two-service stack comes up with one `docker compose up`. Named persona-mix presets give operators a `--preset=stress-no-match` shortcut for the 404 path. The structured boot log gains an `attrs.profile` object that aggregators slice on for per-shape latency dashboards.
