@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.4] - 2023-03-27
+
+Multi-arch image release. Mirror of markup-svc/ADR-0018 + decision-gateway/ADR-0004. Closes ADR-0005.
+
+### Added
+
+- `cmd/traffic-gen/Dockerfile`: `--platform=$BUILDPLATFORM` on the build stage + `ARG BUILDPLATFORM` / `ARG TARGETOS` / `ARG TARGETARCH` + GOARCH-aware build command (defaults preserve plain `docker build` producing amd64). The stale "go.sum lands in a future release" comment is removed (OTel deps in v0.0.3 brought it in).
+- `.github/workflows/ci.yml`: image-publish job gains `platforms: linux/amd64,linux/arm64`.
+- ADR-0005 (Accepted): multi-arch image publish.
+
+### Performance impact
+
+CI build +30 seconds; runtime zero delta between native amd64 and arm64; Apple Silicon pull no longer triggers Rosetta-2 emulation.
+
 ## [0.0.3] - 2023-03-24
 
 Tracing release. `--otel-enabled` bootstraps the OTel SDK + wraps the poster's outbound HTTP client `Transport` with an `InstrumentedTransport` that opens one root `traffic.request` span per outbound POST and injects W3C `traceparent` into the request headers. traffic-gen becomes the trace root of the platform pipeline: the gateway (decision-gateway v0.0.2+) extracts the propagated traceparent and continues the chain; markup-svc (v0.1.6+) extracts it from the gateway's proxied request; the whole `traffic-gen → decision-gateway → markup-svc` waterfall renders as a single trace in Jaeger UI with each component's per-request cost visible. Closes ADR-0004.
