@@ -24,3 +24,4 @@ NNNN-short-decision-name.md
 | [0003](0003-rate-profiles.md) | Rate profiles for variable-QPS long runs | ✅ Accepted |
 | [0004](0004-otel-root-spans.md) | OTel root spans + W3C trace context emission per outbound POST | ✅ Accepted |
 | [0005](0005-multi-arch-images.md) | Multi-arch (linux/amd64 + linux/arm64) image publish | ✅ Accepted |
+| [0006](0006-metrics-and-correlation-id.md) | Prometheus /metrics endpoint + outbound X-Correlation-ID | ✅ Accepted |

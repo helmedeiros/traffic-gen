@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.5] - 2023-04-21
+
+`--metrics-listen` + `--run-id` close the last two operator-visibility gaps from the original v0.0.3 plan. Closes ADR-0006.
+
+### Added
+
+- `internal/observability/metrics`: `Sink` + `New()`. Counter `trafficgen_requests_total{outcome}`, histogram `trafficgen_request_duration_seconds{outcome}`, gauges `trafficgen_target_qps` + `trafficgen_achieved_qps` refreshed on a 1 s tick.
+- `cmd` flag `--metrics-listen` — when non-empty, starts a goroutine HTTP server on that address and a gauge-refresh ticker.
+- `cmd` flag `--run-id` — when non-empty, makes the poster stamp `X-Correlation-ID: <run-id>:<seq>` on every outbound POST. Operators filter Kibana for `attrs.correlation_id : "<run-id>:*"` to see every request in a single run.
+- `poster.Config.Metrics` (interface) + `poster.Config.CorrelationIDPrefix` (string) for the wiring path. Legacy path stays unchanged (nilSink + empty prefix).
+- `github.com/prometheus/client_golang@v1.14.0` dep.
+- ADR-0006.
+
 ## [0.0.4] - 2023-03-27
 
 Multi-arch image release. Mirror of markup-svc/ADR-0018 + decision-gateway/ADR-0004. Closes ADR-0005.

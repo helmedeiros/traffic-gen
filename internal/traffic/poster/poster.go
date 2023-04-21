@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
@@ -36,6 +37,23 @@ type Config struct {
 	Duration  time.Duration
 	Client    *http.Client
 	Out       io.Writer
+
+	// CorrelationIDPrefix, when non-empty, makes the poster set
+	// X-Correlation-ID: <prefix>:<counter> on every outbound request.
+	// Operators filter Kibana for attrs.correlation_id : "<prefix>:*"
+	// to see every request in a single load run. See ADR-0006.
+	CorrelationIDPrefix string
+
+	// Metrics, when non-nil, receives one RecordOutcome call per
+	// completed request + SetTargetQPS / SetAchievedQPS gauge updates
+	// every 1s. nil = no metrics (the legacy path).
+	Metrics metricsSink
+}
+
+type metricsSink interface {
+	RecordOutcome(outcome string, durationSeconds float64)
+	SetTargetQPS(qps float64)
+	SetAchievedQPS(qps float64)
 }
 
 // Summary is the per-run accounting Run returns when Run returns.
@@ -87,6 +105,9 @@ func New(cfg Config) (*Poster, error) {
 	if cfg.Out == nil {
 		cfg.Out = io.Discard
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = nilSink{}
+	}
 	return &Poster{cfg: cfg}, nil
 }
 
@@ -125,31 +146,41 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 	start := time.Now()
 	nextSend := start
 
+	var corrCounter uint64
 	post := func() {
 		summary.Attempts++
+		t0 := time.Now()
 		req := gen.Next()
 		body, err := json.Marshal(req)
 		if err != nil {
 			fmt.Fprintf(p.cfg.Out, "poster: marshal error: %v\n", err)
 			summary.TransportErrors++
+			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.TargetURL, bytes.NewReader(body))
 		if err != nil {
 			fmt.Fprintf(p.cfg.Out, "poster: build request error: %v\n", err)
 			summary.TransportErrors++
+			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
+		if p.cfg.CorrelationIDPrefix != "" {
+			n := atomic.AddUint64(&corrCounter, 1)
+			httpReq.Header.Set("X-Correlation-ID", fmt.Sprintf("%s:%d", p.cfg.CorrelationIDPrefix, n))
+		}
 		resp, err := p.cfg.Client.Do(httpReq)
 		if err != nil {
 			fmt.Fprintf(p.cfg.Out, "poster: transport error: %v\n", err)
 			summary.TransportErrors++
+			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		classify(resp.StatusCode, &summary)
+		p.cfg.Metrics.RecordOutcome(outcomeFor(resp.StatusCode), time.Since(t0).Seconds())
 	}
 
 	for {
@@ -233,6 +264,32 @@ func classify(status int, s *Summary) {
 		s.TransportErrors++
 	}
 }
+
+func outcomeFor(status int) string {
+	switch {
+	case status >= 200 && status < 300:
+		return "success"
+	case status == http.StatusNotFound:
+		return "no_match"
+	case status >= 400 && status < 500:
+		return "client_error"
+	case status >= 500 && status < 600:
+		return "server_error"
+	default:
+		return "transport_error"
+	}
+}
+
+// nilSink is the zero-value receiver allowing p.cfg.Metrics calls
+// without a non-nil check at every call site. The interface type lets
+// cmd plug in the real *metrics.Sink without poster depending on it.
+type nilSink struct{}
+
+func (nilSink) RecordOutcome(string, float64) {}
+func (nilSink) SetTargetQPS(float64)          {}
+func (nilSink) SetAchievedQPS(float64)        {}
+
+var _ metricsSink = nilSink{}
 
 // qps returns the steady-state requests-per-second for the run.
 // Returns 0 when duration is non-positive (no measurable interval).

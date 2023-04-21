@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/helmedeiros/traffic-gen/internal/jsonlog"
+	tgmetrics "github.com/helmedeiros/traffic-gen/internal/observability/metrics"
 	tgotel "github.com/helmedeiros/traffic-gen/internal/observability/otel"
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
@@ -48,6 +49,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request HTTP timeout")
 	preset := fs.String("preset", "default", "named persona-mix preset (one of: default, uniform, stress-no-match); see traffic-gen/ADR-0002")
 	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit one root traffic.request span per outbound POST + inject W3C traceparent so downstream services (gateway, markup-svc) join the same trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions. See ADR-0004.")
+	metricsListen := fs.String("metrics-listen", "", "when set, serve Prometheus /metrics on this address (e.g., :9101). Counters per outcome + duration histogram + target/achieved QPS gauges. See ADR-0006.")
+	runID := fs.String("run-id", "", "X-Correlation-ID prefix stamped on every outbound POST as '<prefix>:<seq>'. Empty disables. Operators use it to filter Kibana for every request in a single load run. See ADR-0006.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,12 +89,33 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		transport = &tgotel.InstrumentedTransport{Tracer: tracer, Inner: transport}
 	}
 	httpClient := &http.Client{Timeout: *timeout, Transport: transport}
+
+	var metricsSink *tgmetrics.Sink
+	if *metricsListen != "" {
+		sink, handler := tgmetrics.New()
+		metricsSink = sink
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", handler)
+		srv := &http.Server{Addr: *metricsListen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			_ = srv.ListenAndServe()
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		go gaugeLoop(ctx, profile, sink)
+	}
+
 	p, err := poster.New(poster.Config{
-		TargetURL: *target,
-		Profile:   profile,
-		Duration:  *duration,
-		Client:    httpClient,
-		Out:       stderr,
+		TargetURL:           *target,
+		Profile:             profile,
+		Duration:            *duration,
+		Client:              httpClient,
+		Out:                 stderr,
+		CorrelationIDPrefix: *runID,
+		Metrics:             metricsSink,
 	})
 	if err != nil {
 		return fmt.Errorf("build poster: %w", err)
@@ -168,6 +192,27 @@ func describeProfile(p rate.RateProfile) map[string]interface{} {
 		}
 	default:
 		return map[string]interface{}{"kind": fmt.Sprintf("%T", p)}
+	}
+}
+
+// gaugeLoop keeps the target/achieved QPS gauges fresh on a 1s tick.
+// Achieved QPS estimates as the difference in poster attempts vs the
+// previous tick (the Sink's request counter is the source).
+func gaugeLoop(ctx context.Context, profile rate.RateProfile, sink *tgmetrics.Sink) {
+	start := time.Now()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	var prevTotal float64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			sink.SetTargetQPS(float64(profile.QPS(now.Sub(start))))
+			cur := sink.Total()
+			sink.SetAchievedQPS(cur - prevTotal)
+			prevTotal = cur
+		}
 	}
 }
 
