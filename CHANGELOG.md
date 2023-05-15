@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.6] - 2023-05-15
+
+Admin-path background mix. Closes ADR-0007.
+
+### Added
+
+- `internal/traffic/adminmix`: new package. `Run(ctx, Config)` posts to a configured admin URL once per interval, validates config, records per-outcome metrics through the same `metricsSink` shape the poster uses.
+- `cmd` flags `--admin-target` (empty = disabled, default) and `--admin-interval` (default 30s). When `--admin-target` is set, a background goroutine joins the main poster's run.
+- ADR-0007.
+
+### Operator-visible
+
+Gateway dashboard `/admin` route panels now show continuous baselines instead of NaN. Real operator admin POSTs still visible on top.
+
 ## [0.0.5] - 2023-04-21
 
 `--metrics-listen` + `--run-id` close the last two operator-visibility gaps from the original v0.0.3 plan. Closes ADR-0006.

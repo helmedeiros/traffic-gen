@@ -20,6 +20,7 @@ import (
 	tgmetrics "github.com/helmedeiros/traffic-gen/internal/observability/metrics"
 	tgotel "github.com/helmedeiros/traffic-gen/internal/observability/otel"
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
+	"github.com/helmedeiros/traffic-gen/internal/traffic/adminmix"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/randommix/presets"
@@ -51,6 +52,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	otelEnabled := fs.Bool("otel-enabled", false, "bootstrap the OTel SDK + emit one root traffic.request span per outbound POST + inject W3C traceparent so downstream services (gateway, markup-svc) join the same trace; reads OTEL_EXPORTER_OTLP_ENDPOINT etc. per the OTel SDK conventions. See ADR-0004.")
 	metricsListen := fs.String("metrics-listen", "", "when set, serve Prometheus /metrics on this address (e.g., :9101). Counters per outcome + duration histogram + target/achieved QPS gauges. See ADR-0006.")
 	runID := fs.String("run-id", "", "X-Correlation-ID prefix stamped on every outbound POST as '<prefix>:<seq>'. Empty disables. Operators use it to filter Kibana for every request in a single load run. See ADR-0006.")
+	adminTarget := fs.String("admin-target", "", "when set, also run a background loop that POSTs to this admin URL once per --admin-interval. Used to keep gateway /admin route dashboards populated. See ADR-0007.")
+	adminInterval := fs.Duration("admin-interval", 30*time.Second, "interval between admin POSTs when --admin-target is set")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,6 +122,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	})
 	if err != nil {
 		return fmt.Errorf("build poster: %w", err)
+	}
+
+	if *adminTarget != "" {
+		go func() {
+			_ = adminmix.Run(ctx, adminmix.Config{
+				TargetURL: *adminTarget,
+				Interval:  *adminInterval,
+				Client:    httpClient,
+				Out:       metricsSink,
+			})
+		}()
 	}
 
 	// stdout carries the structured boot line so operators piping
