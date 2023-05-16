@@ -14,9 +14,9 @@ import (
 )
 
 func TestRun_PostsAtInterval(t *testing.T) {
-	var hits atomic.Int32
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
+		atomic.AddInt32(&hits, 1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -31,7 +31,7 @@ func TestRun_PostsAtInterval(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	got := hits.Load()
+	got := atomic.LoadInt32(&hits)
 	if got < 2 || got > 4 {
 		t.Errorf("expected 2-4 hits in ~110ms at 30ms interval, got %d", got)
 	}

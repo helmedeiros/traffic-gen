@@ -7,6 +7,10 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.7] - 2023-05-16
+
+CI fix. v0.0.6 used `atomic.Int32` in `internal/traffic/adminmix/adminmix_test.go`; the repo's Go baseline is 1.18 (the type lands in Go 1.19). Switched to package-level `atomic.AddInt32` / `atomic.LoadInt32`. Source contents of the runtime package are identical to v0.0.6.
+
 ## [0.0.6] - 2023-05-15
 
 Admin-path background mix. Closes ADR-0007.
