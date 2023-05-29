@@ -7,6 +7,24 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.8] - 2023-05-29
+
+Path-derived span names so Jaeger can distinguish /decide from /admin/* at a glance. Closes ADR-0008.
+
+### Changed
+
+- `internal/observability/otel.SpanNameFor(path)`: new exported helper. `/decide` → `traffic.decide`; `/admin/<x>/<y>` → `traffic.admin.<x>.<y>`; unknown paths keep the legacy `traffic.request`.
+- `InstrumentedTransport.RoundTrip`: starts the span with `SpanNameFor(req.URL.Path)` instead of the constant `"traffic.request"`. SpanKind, attributes, traceparent injection unchanged.
+
+### Added
+
+- Table-driven unit test (`TestSpanNameFor`) covering /decide, four /admin endpoints, /healthz, /, and "".
+- End-to-end `TestInstrumentedTransport_SpanNameMatchesPath` against a stub upstream serving both /decide and /admin/reload.
+
+### Operator-visible
+
+Jaeger search results show `traffic.decide` and `traffic.admin.reload` as distinct operation names; Jaeger SPM tracks each path's p99 / p95 / error rate on its own timeseries instead of averaging them under `traffic.request`. Legacy `traffic.request` operation continues for unknown paths so old dashboards / saved searches keep working during the transition.
+
 ## [0.0.7] - 2023-05-16
 
 CI fix. v0.0.6 used `atomic.Int32` in `internal/traffic/adminmix/adminmix_test.go`; the repo's Go baseline is 1.18 (the type lands in Go 1.19). Switched to package-level `atomic.AddInt32` / `atomic.LoadInt32`. Source contents of the runtime package are identical to v0.0.6.

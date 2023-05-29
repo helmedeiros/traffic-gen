@@ -71,3 +71,53 @@ func Test_InstrumentedTransport_EmitsRootSpan_InjectsTraceparent(t *testing.T) {
 		t.Errorf("http.status_code = %v, want 200", got["http.status_code"])
 	}
 }
+
+func TestSpanNameFor(t *testing.T) {
+	cases := []struct {
+		path, want string
+	}{
+		{"/decide", "traffic.decide"},
+		{"/admin/reload", "traffic.admin.reload"},
+		{"/admin/diagnose", "traffic.admin.diagnose"},
+		{"/admin/routes", "traffic.admin.routes"},
+		{"/admin/guardrails", "traffic.admin.guardrails"},
+		{"/healthz", "traffic.request"},
+		{"/", "traffic.request"},
+		{"", "traffic.request"},
+	}
+	for _, tc := range cases {
+		if got := tgotel.SpanNameFor(tc.path); got != tc.want {
+			t.Errorf("SpanNameFor(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestInstrumentedTransport_SpanNameMatchesPath(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	tracer := tp.Tracer("test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/decide", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("/admin/reload", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	upstream := httptest.NewServer(mux)
+	defer upstream.Close()
+
+	client := &http.Client{Transport: &tgotel.InstrumentedTransport{Tracer: tracer, Inner: http.DefaultTransport}}
+	_, _ = client.Post(upstream.URL+"/decide", "application/json", strings.NewReader(`{}`))
+	_, _ = client.Post(upstream.URL+"/admin/reload", "application/json", nil)
+
+	spans := exporter.GetSpans()
+	names := map[string]int{}
+	for _, s := range spans {
+		names[s.Name]++
+	}
+	if names["traffic.decide"] != 1 {
+		t.Errorf("expected 1 traffic.decide span, got %d (names=%v)", names["traffic.decide"], names)
+	}
+	if names["traffic.admin.reload"] != 1 {
+		t.Errorf("expected 1 traffic.admin.reload span, got %d (names=%v)", names["traffic.admin.reload"], names)
+	}
+}

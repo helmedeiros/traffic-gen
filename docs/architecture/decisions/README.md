@@ -26,3 +26,4 @@ NNNN-short-decision-name.md
 | [0005](0005-multi-arch-images.md) | Multi-arch (linux/amd64 + linux/arm64) image publish | ✅ Accepted |
 | [0006](0006-metrics-and-correlation-id.md) | Prometheus /metrics endpoint + outbound X-Correlation-ID | ✅ Accepted |
 | [0007](0007-admin-mix.md) | Admin-path background mix | ✅ Accepted |
+| [0008](0008-path-derived-span-names.md) | Path-derived span names in the instrumented transport | ✅ Accepted |

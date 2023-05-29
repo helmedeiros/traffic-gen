@@ -2,6 +2,7 @@ package otel
 
 import (
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -27,6 +28,22 @@ type InstrumentedTransport struct {
 	Inner  http.RoundTripper
 }
 
+// SpanNameFor maps an outbound URL path to the operation name surfaced
+// in Jaeger. Distinguishes /decide from /admin/* so the Jaeger UI
+// groups them as separate operations and SPM tracks their p99
+// independently. Unknown paths keep the legacy "traffic.request" name.
+// See ADR-0008.
+func SpanNameFor(path string) string {
+	switch {
+	case path == "/decide":
+		return "traffic.decide"
+	case strings.HasPrefix(path, "/admin/"):
+		return "traffic.admin" + strings.ReplaceAll(strings.TrimPrefix(path, "/admin"), "/", ".")
+	default:
+		return "traffic.request"
+	}
+}
+
 // RoundTrip implements http.RoundTripper.
 func (t *InstrumentedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	inner := t.Inner
@@ -37,7 +54,7 @@ func (t *InstrumentedTransport) RoundTrip(req *http.Request) (*http.Response, er
 		return inner.RoundTrip(req)
 	}
 
-	ctx, span := t.Tracer.Start(req.Context(), "traffic.request",
+	ctx, span := t.Tracer.Start(req.Context(), SpanNameFor(req.URL.Path),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("http.method", req.Method),
