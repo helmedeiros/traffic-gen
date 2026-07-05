@@ -19,6 +19,7 @@ import (
 	"github.com/helmedeiros/traffic-gen/internal/jsonlog"
 	tgmetrics "github.com/helmedeiros/traffic-gen/internal/observability/metrics"
 	tgotel "github.com/helmedeiros/traffic-gen/internal/observability/otel"
+	"github.com/helmedeiros/traffic-gen/internal/session"
 	"github.com/helmedeiros/traffic-gen/internal/traffic"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/adminmix"
 	"github.com/helmedeiros/traffic-gen/internal/traffic/poster"
@@ -54,8 +55,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	runID := fs.String("run-id", "", "X-Correlation-ID prefix stamped on every outbound POST as '<prefix>:<seq>'. Empty disables. Operators use it to filter Kibana for every request in a single load run. See ADR-0006.")
 	adminTarget := fs.String("admin-target", "", "when set, also run a background loop that POSTs to this admin URL once per --admin-interval. Used to keep gateway /admin route dashboards populated. See ADR-0007.")
 	adminInterval := fs.Duration("admin-interval", 30*time.Second, "interval between admin POSTs when --admin-target is set")
+
+	// Session mode (ADR-0009): mutually exclusive with the rate profiles.
+	// When --session>0, traffic-gen drives simulated customer journeys
+	// against funnel-sim instead of posting /decide requests to --target.
+	sessionUsers := fs.Int("session", 0, "run N concurrent session-driven virtual users against a funnel-sim instance (mutually exclusive with --qps and --profile). See ADR-0009.")
+	sessionURL := fs.String("session-funnel-url", "http://funnel-sim:8081", "base URL of funnel-sim when --session>0")
+	sessionPClick := fs.Float64("session-p-click", 0.15, "P(virtual user clicks any offer after search)")
+	sessionPWalkAtInit := fs.Float64("session-p-walk-at-init", 0.30, "P(virtual user walks after init before providing info)")
+	sessionPWalkAtReserve := fs.Float64("session-p-walk-at-reserve", 0.20, "P(virtual user walks after reserve before paying)")
+	sessionThinkInitMin := fs.Duration("session-think-init-min", 500*time.Millisecond, "min think time before info entry")
+	sessionThinkInitMax := fs.Duration("session-think-init-max", 3*time.Second, "max think time before info entry")
+	sessionThinkReserveMin := fs.Duration("session-think-reserve-min", 1*time.Second, "min think time before payment")
+	sessionThinkReserveMax := fs.Duration("session-think-reserve-max", 5*time.Second, "max think time before payment")
+	sessionOffers := fs.Int("session-offers-per-search", 8, "N offers funnel-sim returns per /search")
+	sessionTier := fs.String("session-customer-tier", "enterprise", "customer_tier stamped on the search query")
+	sessionCountry := fs.String("session-country", "DE", "country stamped on the search query")
+	sessionRoute := fs.String("session-route", "BR-DE", "route stamped on the search query")
+
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if *sessionUsers > 0 && (*qps != 0 || *profileSpec != "") {
+		return fmt.Errorf("--session is mutually exclusive with --qps and --profile")
 	}
 
 	if *qps != 0 && *profileSpec != "" {
@@ -78,7 +101,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("build generator: %w", err)
 	}
 
-	var transport http.RoundTripper = http.DefaultTransport
+	var transport http.RoundTripper = http.DefaultTransport //nolint:staticcheck // QF1011: interface type required so tgotel.InstrumentedTransport can be assigned below
 	if *otelEnabled {
 		tracer, shutdown, err := tgotel.Bootstrap(ctx, "github.com/helmedeiros/traffic-gen/cmd/traffic-gen")
 		if err != nil {
@@ -109,6 +132,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_ = srv.Shutdown(shutdownCtx)
 		}()
 		go gaugeLoop(ctx, profile, sink)
+	}
+
+	// Session mode short-circuits the poster path. OTel + metrics are
+	// still wired above so every /search + /booking/* call carries a
+	// traceparent and per-request metrics.
+	if *sessionUsers > 0 {
+		return runSession(ctx, stdout, sessionConfig{
+			funnelURL:      *sessionURL,
+			users:          *sessionUsers,
+			duration:       *duration,
+			pClick:         *sessionPClick,
+			pWalkAtInit:    *sessionPWalkAtInit,
+			pWalkAtReserve: *sessionPWalkAtReserve,
+			thinkInitMin:   *sessionThinkInitMin,
+			thinkInitMax:   *sessionThinkInitMax,
+			thinkReserveMin: *sessionThinkReserveMin,
+			thinkReserveMax: *sessionThinkReserveMax,
+			offers:         *sessionOffers,
+			customerTier:   *sessionTier,
+			country:        *sessionCountry,
+			route:          *sessionRoute,
+			seed:           *seed,
+			client:         httpClient,
+		})
 	}
 
 	p, err := poster.New(poster.Config{
@@ -155,6 +202,71 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	} else {
 		log.Info("traffic-gen.done", nil)
 	}
+	return err
+}
+
+// sessionConfig plumbs the operator's --session-* flag choices into
+// runSession without pushing a wide argument list.
+type sessionConfig struct {
+	funnelURL       string
+	users           int
+	duration        time.Duration
+	pClick          float64
+	pWalkAtInit     float64
+	pWalkAtReserve  float64
+	thinkInitMin    time.Duration
+	thinkInitMax    time.Duration
+	thinkReserveMin time.Duration
+	thinkReserveMax time.Duration
+	offers          int
+	customerTier    string
+	country         string
+	route           string
+	seed            int64
+	client          *http.Client
+}
+
+func runSession(ctx context.Context, stdout io.Writer, sc sessionConfig) error {
+	r, err := session.New(session.Config{
+		FunnelURL:       sc.funnelURL,
+		Users:           sc.users,
+		Duration:        sc.duration,
+		PClick:          sc.pClick,
+		PWalkAtInit:     sc.pWalkAtInit,
+		PWalkAtReserve:  sc.pWalkAtReserve,
+		ThinkInitMin:    sc.thinkInitMin,
+		ThinkInitMax:    sc.thinkInitMax,
+		ThinkReserveMin: sc.thinkReserveMin,
+		ThinkReserveMax: sc.thinkReserveMax,
+		OffersPerSearch: sc.offers,
+		CustomerTier:    sc.customerTier,
+		Country:         sc.country,
+		Route:           sc.route,
+		Seed:            sc.seed,
+		Client:          sc.client,
+	})
+	if err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	log := jsonlog.New(stdout)
+	log.Info("traffic-gen.session.boot", map[string]interface{}{
+		"funnel_url": sc.funnelURL,
+		"users":      sc.users,
+		"duration":   sc.duration.String(),
+		"p_click":    sc.pClick,
+	})
+	err = r.Run(ctx)
+	stats := r.Stats()
+	log.Info("traffic-gen.session.done", map[string]interface{}{
+		"searches":     stats.Searches,
+		"no_click":     stats.NoClick,
+		"init":         stats.Init,
+		"walk_init":    stats.WalkInit,
+		"reserve":      stats.Reserve,
+		"walk_reserve": stats.WalkReserve,
+		"purchased":    stats.Purchased,
+		"errors":       stats.Errors,
+	})
 	return err
 }
 

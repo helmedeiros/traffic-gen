@@ -27,3 +27,4 @@ NNNN-short-decision-name.md
 | [0006](0006-metrics-and-correlation-id.md) | Prometheus /metrics endpoint + outbound X-Correlation-ID | ✅ Accepted |
 | [0007](0007-admin-mix.md) | Admin-path background mix | ✅ Accepted |
 | [0008](0008-path-derived-span-names.md) | Path-derived span names in the instrumented transport | ✅ Accepted |
+| [0009](0009-session-driver.md) | Session driver: `--session=N` funnel-oriented state machine | ✅ Accepted |

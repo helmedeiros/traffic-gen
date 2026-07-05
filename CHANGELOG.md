@@ -7,6 +7,11 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- ADR-0009 session driver: `--session=N` runs N concurrent virtual users through the funnel state machine (search → book/init → reserve/purchase or timeout) against a funnel-sim instance. Mutually exclusive with `--qps` / `--profile` so the rate-profile driver is untouched. Configurable per-flag: `--session-funnel-url`, `--session-p-click` / `--session-p-walk-at-init` / `--session-p-walk-at-reserve` (defaults 0.15 / 0.30 / 0.20 give ~8.4% end-to-end conversion), `--session-think-init-{min,max}` / `--session-think-reserve-{min,max}`, `--session-offers-per-search`, `--session-{customer-tier,country,route}`. Every HTTP call carries a fresh W3C traceparent so decision-gateway → funnel-sim → markup-svc join one Jaeger trace. On shutdown, emits `traffic-gen.session.done` with atomic counters for every terminal outcome — an operator computes funnel drop-off from that log line alone.
+- Fixed pre-existing lint noise on `poster.go` unchecked `fmt.Fprintf` returns and `main.go` unused type declaration so `make ci-local` is green top-to-bottom.
+
 ## [0.0.8] - 2023-05-29
 
 Path-derived span names so Jaeger can distinguish /decide from /admin/* at a glance. Closes ADR-0008.

@@ -153,14 +153,14 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 		req := gen.Next()
 		body, err := json.Marshal(req)
 		if err != nil {
-			fmt.Fprintf(p.cfg.Out, "poster: marshal error: %v\n", err)
+			_, _ = fmt.Fprintf(p.cfg.Out, "poster: marshal error: %v\n", err)
 			summary.TransportErrors++
 			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.TargetURL, bytes.NewReader(body))
 		if err != nil {
-			fmt.Fprintf(p.cfg.Out, "poster: build request error: %v\n", err)
+			_, _ = fmt.Fprintf(p.cfg.Out, "poster: build request error: %v\n", err)
 			summary.TransportErrors++
 			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
@@ -172,7 +172,7 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 		}
 		resp, err := p.cfg.Client.Do(httpReq)
 		if err != nil {
-			fmt.Fprintf(p.cfg.Out, "poster: transport error: %v\n", err)
+			_, _ = fmt.Fprintf(p.cfg.Out, "poster: transport error: %v\n", err)
 			summary.TransportErrors++
 			p.cfg.Metrics.RecordOutcome("transport_error", time.Since(t0).Seconds())
 			return
@@ -240,7 +240,7 @@ func (p *Poster) Run(ctx context.Context, gen traffic.Generator) error {
 func writeSummary(out io.Writer, s *Summary, start time.Time) {
 	s.Duration = time.Since(start)
 	s.AchievedQPS = qps(s.Attempts, s.Duration)
-	fmt.Fprintf(out, "poster: done attempts=%d duration=%s qps=%.1f successes=%d not_matches=%d client_errors=%d server_errors=%d transport_errors=%d\n",
+	_, _ = fmt.Fprintf(out, "poster: done attempts=%d duration=%s qps=%.1f successes=%d not_matches=%d client_errors=%d server_errors=%d transport_errors=%d\n",
 		s.Attempts, s.Duration, s.AchievedQPS,
 		s.Successes, s.NotMatches, s.ClientErrors,
 		s.ServerErrors, s.TransportErrors)
